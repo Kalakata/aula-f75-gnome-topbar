@@ -6,8 +6,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 uuid=aula-f75-topbar@kalakata.github.io
 rule=/etc/udev/rules.d/70-aula-f75.rules
 
-if ! cmp -s "$here/70-aula-f75.rules" "$rule"; then
+old=/etc/udev/rules.d/99-aula-f75.rules   # earlier versions: also exposed the keystroke interface
+if ! cmp -s "$here/70-aula-f75.rules" "$rule" || [ -e "$old" ]; then
     echo "Installing udev rule to $rule (needs sudo)..."
+    sudo rm -f "$old"
     sudo install -m 644 "$here/70-aula-f75.rules" "$rule"
     sudo udevadm control --reload
     sudo udevadm trigger --subsystem-match=hidraw --action=change
