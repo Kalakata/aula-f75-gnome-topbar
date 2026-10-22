@@ -2,6 +2,23 @@
 
 Linux lighting control for the Aula F75 keyboard (wired USB-C, `258a:010c`), with a GNOME top-bar menu.
 
+Unofficial: not affiliated with or endorsed by AULA. The protocol was worked out by studying the vendor's
+Windows driver; no vendor code or files are included.
+
+## Before you use it
+
+This talks to the keyboard's firmware directly, with no vendor safety net. Read this first.
+
+- **Tested on one keyboard only:** an Aula F75 (non-Max), wired, firmware 24, on GNOME 50 / Ubuntu.
+  Other revisions, the F75 Max, or 2.4 GHz / Bluetooth mode are untested and not supported.
+- **Known firmware crashes.** Effect 11 and config writes sent less than about a second apart make the
+  keyboard drop off USB. It came back by itself each time with its settings intact. `aulactl` refuses
+  effect 11 and spaces config writes 1.5 s apart; don't bypass that.
+- **Flash wear.** Per-key colours (command `06`) are written to flash. `aulactl` never streams them;
+  animations use the RAM-only live channel (`08`). If you hack on this, keep it that way.
+- Back up first: `aulactl save ~/aula-backup.bin`; `aulactl restore` puts it back.
+- No warranty (see [LICENSE](LICENSE)). If it bricks your keyboard, that's on you.
+
 ## Requirements
 
 - GNOME Shell 50 (the only version tested)
@@ -54,3 +71,7 @@ Reads use `CMD | 0x80`. Write commands:
 - LED index = column × 6 + row. The F75 has 15 columns (LED 0-89); row 0 is the F-key row.
 - Effect 21 (Self-define) needs config byte `0x11` = 1 as well, or the board stays dark. Its brightness is byte `0x7d` (Fn+↑ changes it).
 - Effect 11 crashes the firmware (USB re-enumerates); `aulactl` refuses it.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
