@@ -1,0 +1,6 @@
+{
+  "uuid": "aula-f75@kaloyan",
+  "name": "Aula F75 Lighting",
+  "description": "Top-bar menu for aulactl: live animations and built-in keyboard effects.",
+  "shell-version": ["50"]
+}

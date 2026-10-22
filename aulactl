@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""aulactl - control Aula F75 (258a:010c) lighting from Linux.
+
+Config layout (520-byte HID feature report, ID 6):
+  0x00-0x07  header: 06 CMD A0 A1 A2 A3 L0 L1
+  0x12       current effect index
+  0x40+2*n   effect n: [brightness 0-9][speed<<4 | color]
+  0x86-0x87  5a a5 end marker
+"""
+import fcntl, glob, json, os, sys
+
+RPT, SIZE, CUR, TBL, NEFF = 6, 520, 0x12, 0x40, 34
+CUSTOM, SELF_DEFINE = 0x11, 21   # custom per-key mode flag, and the effect that uses it
+NAMES = os.path.expanduser('~/.config/aula/effect-names.json')
+
+def names():
+    """Effect descriptions, surveyed by hand. Missing file is not an error."""
+    try:
+        return {int(k): v for k, v in json.load(open(NAMES)).items()}
+    except (OSError, ValueError):
+        return {}
+
+def resolve(arg, tbl):
+    """Accept an effect number, or a name.
+
+    Exact matches win before substring ones, otherwise 'rain' would be
+    ambiguous against every 'rainbow - ...' entry.
+    """
+    if arg.isdigit():
+        return int(arg)
+    q = arg.lower().strip()
+    base = lambda d: d.lower().split(' - ')[0].strip()   # label before the dash
+    for pick in (lambda n,d: d.lower()==q, lambda n,d: base(d)==q,
+                 lambda n,d: q in d.lower()):
+        hits = [n for n, d in tbl.items() if pick(n, d)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            sys.exit('ambiguous: ' + ', '.join(f'{n}={tbl[n]}' for n in sorted(hits)))
+    sys.exit(f'no effect matching {arg!r} (try: aulactl list)')
+
+def _ioc(d,t,nr,n): return (d<<30)|(n<<16)|(t<<8)|nr
+def find(vid=0x258a, pid=0x010c):
+    hits=[]
+    for d in sorted(glob.glob('/sys/class/hidraw/hidraw*')):
+        try: ue=open(os.path.join(d,'device/uevent')).read()
+        except OSError: continue
+        for line in ue.splitlines():
+            if line.startswith('HID_ID='):
+                _,v,p=line.split('=')[1].split(':')
+                if int(v,16)==vid and int(p,16)==pid:
+                    hits.append('/dev/'+os.path.basename(d))
+    return hits
+
+def _get(fd):
+    b=bytearray(SIZE); b[0]=RPT
+    fcntl.ioctl(fd,_ioc(3,ord('H'),0x07,SIZE),b,True); return bytearray(b)
+def _set(fd,p):
+    b=bytearray(SIZE); b[0]=RPT; b[1:1+len(p)]=p
+    fcntl.ioctl(fd,_ioc(3,ord('H'),0x06,SIZE),b,True)
+def _cmd(c,addr=0,ln=0):
+    return bytes([c,addr&0xff,(addr>>8)&0xff,(addr>>16)&0xff,(addr>>24)&0xff,ln&0xff,(ln>>8)&0xff])
+
+def stop_animation():
+    """A running animation streams frames non-stop, which garbles any other command's replies.
+    Newest command wins: interrupt it (SIGINT = clean exit, stops its pw-record too)."""
+    import signal, subprocess
+    # anchored to the interpreter so shells whose command line merely mentions it are left alone
+    out=subprocess.run(['pgrep','-f',r'^python3? \S*aulactl animate'],capture_output=True,text=True).stdout
+    others=[int(p) for p in out.split() if int(p)!=os.getpid()]
+    for pid in others: os.kill(pid,signal.SIGINT)
+    if others: time.sleep(0.3)
+
+def open_dev():
+    for path in find():
+        try:
+            fd=os.open(path,os.O_RDWR)
+            _set(fd,_cmd(0x84,0,512)); d=_get(fd)
+            if d[1]==0x84: return fd
+            os.close(fd)
+        except OSError: pass
+    sys.exit('Aula F75 not found on USB-C. Connect the cable (and run as root).')
+
+def read_cfg(fd):
+    # right after a write the board can briefly refuse (EPIPE) or answer garbage while it saves;
+    # every command writes back what it read, so only a well-formed reply may leave here
+    for _ in range(5):
+        try:
+            _set(fd,_cmd(0x84,0,512)); b=_get(fd)
+            if b[1]==0x84 and b[0x86:0x88]==b'\x5a\xa5': return b
+        except BrokenPipeError:
+            pass
+        time.sleep(0.15)
+    sys.exit('keyboard gave no valid config reply; nothing written')
+STAMP=os.path.expanduser('~/.cache/aula-last-write')
+def write_cfg(fd,buf):
+    # config writes <1s apart crashed the firmware (USB drop, 2026-10-22): space them across processes
+    try: wait=os.path.getmtime(STAMP)+1.5-time.time()
+    except OSError: wait=0
+    if wait>0: time.sleep(wait)
+    _set(fd,_cmd(0x04,0,512)+bytes(buf[8:8+512]))
+    os.makedirs(os.path.dirname(STAMP),exist_ok=True); open(STAMP,'w').close()
+    time.sleep(0.3)   # let it finish saving before anyone reads it back
+
+import colorsys, math, random, time
+hsv=colorsys.hsv_to_rgb
+COLS, ROWS = 15, 6   # 15 LED columns (indexes 0-89, see KB.ini); row 0 = F-keys, row 5 = space bar
+NO_KEY={6,23,29,41,47,65,71,75,76,84}   # grid positions with no LED (gaps, knob, wide keys; from KB.ini)
+
+def a_aurora():
+    """Aurora ribbon waving horizontally across a starry night sky."""
+    rnd=random.Random(7)   # fixed seed: stars stay on the same keys every run
+    stars={(c,r):(rnd.uniform(1,3),rnd.uniform(0,6.3)) for c in range(COLS) for r in range(ROWS) if rnd.random()<0.18}
+    def px(c,r,t):
+        y=2.2+1.1*math.sin(c*0.45-t*1.3)+0.5*math.sin(c*0.9+t*0.7)   # ribbon's height, drifting sideways
+        a=max(0,1-abs(r-y)/1.6)**2*(0.6+0.4*math.sin(c*1.3-t*4))     # glow falls off above/below, shimmers
+        R,G,B=hsv(0.38+0.35*(0.5+0.5*math.sin(c*0.25-t*0.4)),0.85,a)  # green drifting to violet
+        s=stars.get((c,r)); tw=max(0,math.sin(t*s[0]+s[1]))**3*0.6 if s else 0
+        return (0.01+R+tw, 0.01+G+tw, 0.04+B+tw)                       # near-black space + twinkle
+    return px
+
+def a_fire():
+    heat=[[0.0]*ROWS for _ in range(COLS)]; shown=[[0.0]*ROWS for _ in range(COLS)]
+    fuel=[random.uniform(0.6,1) for _ in range(COLS)]; sparks=[]; last=[0.0]
+    def step(t):
+        if t-last[0]>=0.1:                               # simulate at ~10 Hz; 30 Hz looked frantic
+            last[0]=t
+            for c in range(COLS):
+                fuel[c]=min(1,max(0.45,fuel[c]+random.uniform(-0.1,0.1)))   # slow drift -> separate flame tongues
+                heat[c][5]=fuel[c]
+                for r in range(5):                       # heat rises, spreads a little, cools more higher up
+                    rise=(2*heat[c][r+1]+heat[max(c-1,0)][r+1]+heat[min(c+1,COLS-1)][r+1])/4
+                    heat[c][r]=max(0,rise-random.uniform(0.08,0.22)*(1+(4-r)*0.4))
+            sparks[:]=[(c,r-1,life-1) for c,r,life in sparks if r>0 and life>1]
+            if random.random()<0.15: sparks.append((random.randrange(COLS),4,random.randint(3,5)))
+        for c in range(COLS):                            # ease toward the simulation so motion is smooth
+            for r in range(ROWS): shown[c][r]+=(heat[c][r]-shown[c][r])*0.2
+    def px(c,r,t):
+        h=shown[c][r]
+        if any(s[0]==c and s[1]==r for s in sparks): h=max(h,0.85)
+        # fire colour ramp: dark red -> orange -> yellow -> pale yellow (LED green is strong, keep it low)
+        return (min(1,h*1.4)**1.3, max(0,min(1,(h-0.3)*1.3))**2*0.65, max(0,h-0.88)*1.5)
+    px.step=step; return px
+
+def a_twinkle():
+    stars={}
+    def step(t):
+        if random.random()<0.5: stars[(random.randrange(COLS),random.randrange(ROWS))]=(t,random.random())
+        for k,(t0,_) in list(stars.items()):
+            if t-t0>1.5: del stars[k]
+    def px(c,r,t):
+        s=stars.get((c,r))
+        base=(0.02,0.02,0.08)                           # deep blue night sky
+        if not s: return base
+        a=math.sin(math.pi*(t-s[0])/1.5); R,G,B=hsv(s[1],0.4,1)
+        return (base[0]+a*R, base[1]+a*G, base[2]+a*B)
+    px.step=step; return px
+
+SNAKE_PALETTES=[  # (snake, background); the next one is used after every game over
+    ((0,1,0.04),(0,0.03,0.22)),          # green on deep blue
+    ((1,0.3,0),(0,0.12,0.12)),           # orange on deep teal
+    ((0,0.9,1),(0.12,0,0.2)),            # cyan on deep purple
+    ((1,0.75,0),(0.08,0,0.22)),          # yellow on deep violet
+    ((0.85,0.85,0.75),(0,0.1,0.02)),     # white on dark green
+    ((1,0,0.55),(0,0.1,0.07)),           # magenta on dark teal
+]
+def a_snake():
+    """Self-playing snake: chases the apple, grows, flashes red and restarts when it gets stuck.
+    Glides: the new head fades in and the cell just left fades out across each move."""
+    STEP=0.22                                            # seconds per move at 1x speed
+    # real keys only, and not the sparse space-bar row: the snake vanished in the holes
+    CELLS={(c,r) for c in range(COLS) for r in range(ROWS-1) if c*ROWS+r not in NO_KEY}
+    st={'next':0.0,'moved':0.0,'tail':None,'pal':-1}
+    def place():
+        free=[x for x in CELLS if x not in st['body']]
+        # mostly near the middle: the snake follows the apple, and edges/corners are the most visible keys
+        w=[math.exp(-(((c-7)/3.5)**2+((r-2)/1.4)**2)) for c,r in free]
+        st['food']=random.choices(free,weights=w)[0]
+    def reset():
+        st.update(body=[(4,2),(3,2),(2,2)], dead=None, pal=(st['pal']+1)%len(SNAKE_PALETTES)); place()
+    def room(start,blocked):
+        """Cells reachable from start; used to refuse moves into pockets smaller than the snake."""
+        seen={start}; todo=[start]
+        while todo:
+            c,r=todo.pop()
+            for n in ((c+1,r),(c-1,r),(c,r+1),(c,r-1)):
+                if n in CELLS and n not in seen and n not in blocked:
+                    seen.add(n); todo.append(n)
+        return len(seen)
+    def step(t):
+        if st['dead'] is not None:
+            if t-st['dead']>1.2: reset(); st['next']=t
+            return
+        if t<st['next']: return
+        st['next']=t+STEP
+        body=st['body']; (hc,hr),(fc,fr)=body[0],st['food']
+        moves=[]
+        for n in ((hc+1,hr),(hc-1,hr),(hc,hr+1),(hc,hr-1)):
+            if n not in CELLS: continue
+            rest=body if n==st['food'] else body[:-1]    # the tail moves out of the way unless we grow
+            if n in rest: continue
+            trapped=room(n,set(rest))<len(rest)+1
+            edge=(n[0] in (0,COLS-1))+(n[1] in (0,ROWS-2))   # 1 on an edge, 2 in a corner
+            moves.append((trapped, abs(n[0]-fc)+abs(n[1]-fr)+0.6*edge, random.random(), n))
+        if not moves: st['dead']=t; return
+        n=min(moves)[3]                                  # safe first, then closest to the apple
+        body.insert(0,n); st['moved']=t; st['tail']=None
+        if n!=st['food']: st['tail']=body.pop()
+        elif len(body)>=len(CELLS)-1: st['dead']=t       # filled the board: restart
+        else: place()
+    reset()
+    mix=lambda a,b,k: tuple(x+(y-x)*k for x,y in zip(a,b))
+    def px(c,r,t):
+        body=st['body']; colour,BG=SNAKE_PALETTES[st['pal']]
+        if st['dead'] is not None:                       # game over: body blinks red
+            v=0.5+0.5*math.cos((t-st['dead'])*12)
+            return (v,0,0) if (c,r) in body else BG
+        if (c,r)==st['food']:
+            p=0.7+0.3*math.sin(t*8); return (p,0.04*p,0)   # pulsing apple
+        p=min(1,(t-st['moved'])/STEP)                    # progress through the current move
+        if (c,r) in body:
+            i=body.index((c,r))
+            if i==0: return mix(BG,colour,p)             # head: full colour, fades in
+            return tuple(x*(0.2+0.55*(1-i/len(body))) for x in colour)   # body darker toward the tail
+        if (c,r)==st['tail']: return mix(tuple(x*0.2 for x in colour),BG,p)   # cell just left fades back
+        return BG
+    px.step=step; return px
+
+def a_scanner():
+    def px(c,r,t):
+        pos=(math.sin(t*2.5)+1)/2*(COLS-1)                   # bounce end to end
+        v=max(0,1-abs(c-pos)/3)**2; return (v,0,v*0.15)
+    return px
+
+def a_heartbeat():
+    def px(c,r,t):
+        p=t%1.2; beat=math.exp(-((p-0.1)/0.06)**2)+0.6*math.exp(-((p-0.35)/0.06)**2)
+        d=math.hypot(c-7,r-2.5)/7.4               # glow from the centre outwards
+        return (min(1,beat*(1.2-d)),0,min(1,beat*0.15))
+    return px
+
+def _spectrum():
+    """Return spectrum() -> COLS log-spaced bands (bass first), auto-gained to 0..1, from whatever
+    is playing (PipeWire sink monitor)."""
+    import atexit, subprocess, threading, numpy as np
+    RATE, N = 44100, 2048
+    proc=subprocess.Popen(['pw-record','-P','{ stream.capture.sink=true }','--format','s16',
+                           '--rate',str(RATE),'--channels','1','--raw','-'],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    atexit.register(proc.terminate)
+    buf=np.zeros(N); lock=threading.Lock()
+    def reader():
+        nonlocal buf
+        while chunk:=proc.stdout.read(1024):
+            s=np.frombuffer(chunk,'<i2')/32768
+            with lock: buf=np.concatenate((buf,s))[-N:]
+    threading.Thread(target=reader,daemon=True).start()
+    edges=np.geomspace(40,16000,COLS+1)               # log-spaced bands, like hearing
+    bins=np.fft.rfftfreq(N,1/RATE)
+    gain=[1e-3]
+    def spectrum():
+        with lock: s=buf.copy()
+        mag=np.abs(np.fft.rfft(s*np.hanning(N)))
+        bands=np.array([mag[(bins>=lo)&(bins<hi)].mean() for lo,hi in zip(edges[:-1],edges[1:])])
+        bands=np.log1p(bands*(1+np.arange(COLS)*0.15))   # lift treble, it is naturally quieter
+        gain[0]=max(gain[0]*0.995, bands.max())            # auto-gain: slow decay, instant attack
+        return bands/gain[0]
+    return spectrum
+
+def a_music():
+    """Spectrum bars, bass on the left."""
+    import numpy as np
+    spectrum=_spectrum(); level=np.zeros(COLS); peak=np.zeros(COLS)
+    def step(t):
+        level[:]=np.maximum(spectrum()*ROWS, level*0.8)    # bars fall smoothly
+        peak[:]=np.maximum(level, peak-0.08)                # peak dots fall slower
+    def px(c,r,t):
+        h=ROWS-r                                           # height of this key from the bottom (1-6)
+        if h<=level[c]+0.3: return hsv((0.66-0.66*h/ROWS)%1,1,1)   # blue low -> red high
+        if abs(h-peak[c]-0.5)<0.5 and peak[c]>0.5: return (1,1,1)
+        return (0,0,0)
+    px.step=step; return px
+
+def a_pulse():
+    """Music radiating from the centre: bass in the middle, treble at the edges; bass hits
+    send rings outward and the whole board throbs with loudness."""
+    import numpy as np
+    spectrum=_spectrum(); level=np.zeros(COLS); rings=[]; st={'avg':0.0,'loud':0.0,'last':0.0}
+    def step(t):
+        b=spectrum(); level[:]=np.maximum(b, level*0.85)
+        bass=b[:4].mean()
+        if bass>st['avg']*1.35 and bass>0.45 and t-st['last']>0.18:   # beat: bass jumps above its average
+            rings.append((t, bass)); st['last']=t
+        st['avg']=st['avg']*0.9+bass*0.1
+        st['loud']=max(b.mean(), st['loud']*0.9)
+        rings[:]=[x for x in rings if t-x[0]<1.2]
+    def px(c,r,t):
+        d=math.hypot(c-7,r-2.5)/7.4                # 0 centre .. ~1 corners
+        v=level[min(COLS-1,int(d*COLS))]**1.5 * (0.4+0.6*st['loud'])
+        ring=sum(s*max(0,1-abs(d-(t-t0)*1.6)*6) for t0,s in rings)   # rings expand outward
+        h=(t*0.05+d*0.6)%1                                  # hue drifts and shifts with distance
+        R,G,B=hsv(h,max(0,1-ring*0.7),min(1,v+ring))
+        return (R,G,B)
+    px.step=step; return px
+
+ANIMS={'aurora':a_aurora,'music':a_music,'pulse':a_pulse,'fire':a_fire,
+       'twinkle':a_twinkle,
+       'snake':a_snake,
+       'scanner':a_scanner,'heartbeat':a_heartbeat}
+
+def animate(fd, name, secs):
+    """Stream frames on cmd 0x08 (the driver's live music channel; RAM only, unlike 0x06 per-key
+    which persists to flash). Frame = 126 LEDs x RGB interleaved, LED index = col*6 + row."""
+    px=ANIMS[name](); t0=last=time.time(); t=0.0; n=0; bri,spd=live()
+    while (now:=time.time())-t0<secs:
+        t+=(now-last)*spd; last=now                      # animation clock runs at the live speed
+        n+=1
+        if n%15==0: bri,spd=live()                       # pick up top-bar slider changes twice a second
+        if hasattr(px,'step'): px.step(t)
+        f=bytearray(378)
+        for c in range(COLS):
+            for r in range(ROWS):
+                i=(c*ROWS+r)*3; f[i:i+3]=bytes(int(max(0,min(1,v*bri))*255) for v in px(c,r,t))
+        _set(fd,_cmd(0x08,1<<16,378)+bytes(f)); time.sleep(1/30)
+
+LIVE=os.path.expanduser('~/.config/aula/live.json')   # written by the top-bar extension
+def live():
+    """Animation brightness (0-1) and speed (multiplier); defaults if the file is missing or bad."""
+    try:
+        d=json.load(open(LIVE)); return float(d.get('brightness',1)), float(d.get('speed',1))
+    except (OSError,ValueError,TypeError,AttributeError):
+        return 1.0, 1.0
+
+def bri_off(e):
+    """Self-define keeps its brightness in its own byte (Fn+Up changes it), not in slot 21."""
+    return 0x7d if e==SELF_DEFINE else TBL+e*2
+
+def show(buf):
+    e=buf[CUR]; o=TBL+e*2; d=names().get(e,'')
+    print(f'effect     {e}  (0-{NEFF})' + (f'  {d}' if d else ''))
+    print(f'brightness {buf[bri_off(e)]}  (0-9)')
+    print(f'speed      {buf[o+1]>>4}  (0-4)')
+    print(f'color      {buf[o+1]&15}  (0-15)')
+
+def main():
+    a=sys.argv[1:]
+    if not a or a[0] in ('-h','--help'):
+        print('usage: aulactl info | list | effect N|NAME | brightness N | speed N | color N'
+              '\n       aulactl save FILE | restore FILE'
+              '\n       aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECONDS]'); return
+    cmd=a[0]
+    if cmd=='animations': print('\n'.join(ANIMS)); return   # for the top-bar menu; no device access
+    if cmd not in ('info','list','save'): stop_animation()   # reads must not kill it (menu opens call list)
+    fd=open_dev(); buf=read_cfg(fd)
+
+    if cmd=='info': show(buf); return
+    if cmd=='list':
+        tbl=names()
+        for n in range(NEFF+1):
+            d=tbl.get(n,'?')
+            print(f'{"*" if n==buf[CUR] else " "} {n:>2}  {d}')
+        print('\n* = current.  Effects marked UNSTABLE crash the firmware; avoid them.')
+        return
+    if cmd=='animate':
+        name=a[1] if len(a)>1 else 'aurora'
+        if name not in ANIMS: sys.exit('animations: '+', '.join(ANIMS))
+        try: animate(fd, name, float(a[2]) if len(a)>2 else float('inf'))
+        except KeyboardInterrupt: pass
+        return
+    if cmd=='save':
+        open(a[1],'wb').write(bytes(buf)); print(f'saved -> {a[1]}'); return
+    if cmd=='restore':
+        d=bytearray(open(a[1],'rb').read())
+        write_cfg(fd,d); print(f'restored from {a[1]}'); show(read_cfg(fd)); return
+
+    e=buf[CUR]
+    val=resolve(a[1],names()) if cmd=='effect' else int(a[1])
+    if cmd=='effect':
+        if not 0<=val<=NEFF: sys.exit(f'effect must be 0-{NEFF}')
+        if 'UNSTABLE' in names().get(val,''):
+            sys.exit(f'effect {val} crashes the keyboard firmware - refusing')
+        buf[CUR]=val
+        buf[CUSTOM]=int(val==SELF_DEFINE)   # driver sets this only for Self-define; without it 21 is dark
+    elif cmd=='brightness':
+        if not 0<=val<=9: sys.exit('brightness must be 0-9')
+        buf[bri_off(e)]=val
+    elif cmd=='speed':
+        if not 0<=val<=4: sys.exit('speed must be 0-4')
+        o=TBL+e*2+1; buf[o]=(val<<4)|(buf[o]&15)
+    elif cmd=='color':
+        if not 0<=val<=15: sys.exit('color must be 0-15')
+        o=TBL+e*2+1; buf[o]=(buf[o]&0xf0)|val
+    else: sys.exit(f'unknown command: {cmd}')
+
+    write_cfg(fd,buf); show(read_cfg(fd))
+
+main()
