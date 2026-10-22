@@ -452,6 +452,9 @@ def main():
     if cmd=='play':
         try: play(fd)
         except KeyboardInterrupt: pass
+        finally:   # hand the keyboard back to the snake animation; systemd-run so closing the terminal doesn't kill it
+            import subprocess
+            subprocess.run(['systemd-run','--user','--collect','--quiet',os.path.realpath(sys.argv[0]),'animate','snake'])
         return
     if cmd=='save':
         open(a[1],'wb').write(bytes(buf)); print(f'saved -> {a[1]}'); return
