@@ -419,4 +419,4 @@ def main():
 
     write_cfg(fd,buf); show(read_cfg(fd))
 
-main()
+if __name__=="__main__": main()
