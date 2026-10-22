@@ -4,11 +4,11 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 uuid=aula-f75-topbar@kalakata.github.io
-rule=/etc/udev/rules.d/99-aula-f75.rules
+rule=/etc/udev/rules.d/70-aula-f75.rules
 
-if ! cmp -s "$here/99-aula-f75.rules" "$rule"; then
+if ! cmp -s "$here/70-aula-f75.rules" "$rule"; then
     echo "Installing udev rule to $rule (needs sudo)..."
-    sudo install -m 644 "$here/99-aula-f75.rules" "$rule"
+    sudo install -m 644 "$here/70-aula-f75.rules" "$rule"
     sudo udevadm control --reload
     sudo udevadm trigger --subsystem-match=hidraw --action=change
 fi

@@ -1,0 +1,5 @@
+# Aula F75 (BY Tech Gaming Keyboard): let the user at the seat control the lighting.
+# Only USB interface 1 (the lighting/config interface). Interface 0 carries keystrokes and stays
+# root-only, and access is the seat-bound uaccess ACL, not a group, so other users and
+# background services cannot read the keyboard. Numbered <73 so systemd applies the uaccess tag.
+SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="258a", ENV{ID_MODEL_ID}=="010c", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
