@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """aulactl - control Aula F75 (258a:010c) lighting from Linux.
 
-Config layout (520-byte HID feature report, ID 6):
-  0x00-0x07  header: 06 CMD A0 A1 A2 A3 L0 L1
+Config layout (520-byte HID feature report, ID 6; protocol notes in README.md):
+  0x00-0x07  header: 06 CMD SUB 00 NPAGES PAGE LEN_lo LEN_hi
   0x12       current effect index
   0x40+2*n   effect n: [brightness 0-9][speed<<4 | color]
   0x86-0x87  5a a5 end marker
@@ -11,14 +11,32 @@ import fcntl, glob, json, os, sys
 
 RPT, SIZE, CUR, TBL, NEFF = 6, 520, 0x12, 0x40, 34
 CUSTOM, SELF_DEFINE = 0x11, 21   # custom per-key mode flag, and the effect that uses it
-NAMES = os.path.expanduser('~/.config/aula/effect-names.json')
+UNSTABLE = {11}   # selecting it crashes the firmware (USB drops, knob can wedge); refused, not overridable
+
+# Built-in effect descriptions, surveyed by hand on one F75 (firmware 24). Wired effect numbering.
+EFFECTS = {
+    0: "lights off", 1: "solid - steady single colour", 2: "blink", 3: "solid - cycling colour",
+    4: "reactive - lights the row you type in", 5: "rain", 6: "rainbow - circular sweep", 7: "wave",
+    8: "christmas", 9: "off - no visible effect", 10: "rainbow - by row",
+    11: "UNSTABLE - crashes the keyboard firmware (forces USB re-enumeration)",
+    12: "key lights", 13: "rainbow - inside out", 14: "off - no visible effect",
+    15: "rainbow - rotating (variant 3)", 16: "rainbow - top to bottom",
+    17: "rainbow - inside out (looked identical to 13)",
+    18: "shadow disappear - reactive, type to see", 19: "flash away - reactive, type to see",
+    20: "ripples shining - reactive, type to see", 21: "self-define - per-key colours (cmd 0x06)",
+    **{n: "off - no visible effect" for n in (22,23,24,25,26,27,28,29,30,31,33,34)},
+    32: "arrow keys only",
+}
+NAMES = os.path.expanduser('~/.config/aula/effect-names.json')   # optional user overrides
 
 def names():
-    """Effect descriptions, surveyed by hand. Missing file is not an error."""
+    """Built-in descriptions, overridden per effect by the optional names file."""
+    tbl = dict(EFFECTS)
     try:
-        return {int(k): v for k, v in json.load(open(NAMES)).items()}
-    except (OSError, ValueError):
-        return {}
+        tbl.update({int(k): v for k, v in json.load(open(NAMES)).items()})
+    except (OSError, ValueError, AttributeError):
+        pass
+    return tbl
 
 def resolve(arg, tbl):
     """Accept an effect number, or a name.
@@ -366,18 +384,25 @@ def main():
         if name not in ANIMS: sys.exit('animations: '+', '.join(ANIMS))
         try: animate(fd, name, float(a[2]) if len(a)>2 else float('inf'))
         except KeyboardInterrupt: pass
+        except ModuleNotFoundError as e:   # only music/pulse have extra needs
+            sys.exit(f'{name} needs the Python module {e.name} (Debian/Ubuntu: sudo apt install python3-{e.name})')
+        except FileNotFoundError as e:
+            if e.filename!='pw-record': raise
+            sys.exit(f'{name} needs pw-record from PipeWire (Debian/Ubuntu: sudo apt install pipewire-bin)')
         return
     if cmd=='save':
         open(a[1],'wb').write(bytes(buf)); print(f'saved -> {a[1]}'); return
     if cmd=='restore':
         d=bytearray(open(a[1],'rb').read())
+        if len(d)!=SIZE or d[0x86:0x88]!=b'\x5a\xa5': sys.exit(f'{a[1]} is not a config saved by aulactl save')
+        if d[CUR] in UNSTABLE: sys.exit(f'{a[1]} selects effect {d[CUR]}, which crashes the firmware - refusing')
         write_cfg(fd,d); print(f'restored from {a[1]}'); show(read_cfg(fd)); return
 
     e=buf[CUR]
     val=resolve(a[1],names()) if cmd=='effect' else int(a[1])
     if cmd=='effect':
         if not 0<=val<=NEFF: sys.exit(f'effect must be 0-{NEFF}')
-        if 'UNSTABLE' in names().get(val,''):
+        if val in UNSTABLE:
             sys.exit(f'effect {val} crashes the keyboard firmware - refusing')
         buf[CUR]=val
         buf[CUSTOM]=int(val==SELF_DEFINE)   # driver sets this only for Self-define; without it 21 is dark

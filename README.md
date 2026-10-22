@@ -1,15 +1,34 @@
-# aula-f75
+# aula-f75-gnome-topbar
 
 Linux lighting control for the Aula F75 keyboard (wired USB-C, `258a:010c`), with a GNOME top-bar menu.
 
+## Requirements
+
+- GNOME Shell 50 (the only version tested)
+- Python 3, the keyboard connected by USB-C in wired mode
+- Optional, for the `music` and `pulse` animations: `numpy` and PipeWire's `pw-record`
+  (Debian/Ubuntu: `sudo apt install python3-numpy pipewire-bin`)
+
+## Install
+
 ```
-./install.sh                 # links aulactl + extension, then log out/in once
-aulactl list | effect NAME | brightness N | speed N | color N | save FILE | restore FILE
-aulactl animate [pulse|music|aurora|fire|twinkle|snake|scanner|heartbeat] [SECONDS]
+git clone https://github.com/Kalakata/aula-f75-gnome-topbar
+cd aula-f75-gnome-topbar
+./install.sh    # links aulactl into ~/.local/bin and the extension into GNOME, installs the udev rule (sudo)
 ```
 
-`music` and `pulse` read whatever audio is playing (PipeWire sink monitor via `pw-record`, needs numpy).
-Access without sudo needs the udev rule `/etc/udev/rules.d/99-aula-f75.rules` (plugdev/uaccess on 258a:010c).
+Then log out and back in once (GNOME on Wayland only loads new extensions at login).
+The udev rule (`99-aula-f75.rules`) gives your user access to the keyboard without sudo.
+
+## Use
+
+```
+aulactl list | info | effect N|NAME | brightness N | speed N | color N | save FILE | restore FILE
+aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECONDS]
+```
+
+The top-bar menu does the same: animations, live brightness and speed sliders, and the built-in effects.
+Effect descriptions are built in; to rename any, put `{"7": "my name"}` in `~/.config/aula/effect-names.json`.
 
 ## Protocol
 
