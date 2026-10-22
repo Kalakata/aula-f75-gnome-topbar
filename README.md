@@ -8,8 +8,10 @@ the top bar, no vendor software, no root.
 | snake | aurora | fire | twinkle |
 |---|---|---|---|
 | ![snake](docs/snake.gif) | ![aurora](docs/aurora.gif) | ![fire](docs/fire.gif) | ![twinkle](docs/twinkle.gif) |
+| **music** | **pulse** | **scanner** | **heartbeat** |
+| ![music](docs/music.gif) | ![pulse](docs/pulse.gif) | ![scanner](docs/scanner.gif) | ![heartbeat](docs/heartbeat.gif) |
 
-<sub>Simulated with `./preview.py NAME SECONDS OUT.gif`: the same frames the keyboard gets, drawn on its 15×6 LED grid.</sub>
+<sub>Simulated with `./preview.py NAME SECONDS OUT.gif`: the same frames the keyboard gets, drawn on its 15×6 LED grid. music and pulse react to whatever is playing; here they get a synthetic beat.</sub>
 
 Unofficial: not affiliated with or endorsed by AULA. The protocol was worked out by studying the vendor's
 Windows driver; no vendor code or files are included.

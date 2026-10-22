@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render an aulactl animation to a GIF, no keyboard needed: preview.py NAME SECONDS OUT.gif
+music and pulse get a synthetic beat instead of live audio.
 Draws the F75's LED grid (15 columns x 6 rows, holes left out), so it shows what each LED gets,
 not the exact keycap layout."""
-import importlib.machinery, importlib.util, os, sys
+import importlib.machinery, importlib.util, math, os, sys
 from PIL import Image, ImageDraw, ImageFilter
 
 here=os.path.dirname(os.path.abspath(__file__))
@@ -10,12 +11,24 @@ loader=importlib.machinery.SourceFileLoader('aulactl', os.path.join(here,'aulact
 a=importlib.util.module_from_spec(importlib.util.spec_from_loader('aulactl',loader)); loader.exec_module(a)
 
 name,secs,out=sys.argv[1],float(sys.argv[2]),sys.argv[3]
-if name in ('music','pulse'): sys.exit('music and pulse need live audio; pick another')
+clock=[0.0]
+def fake_spectrum():
+    """Stands in for live audio in music/pulse: a 120 bpm kick, a wandering melody, hi-hat noise."""
+    import numpy as np
+    rnd=np.random.default_rng(3); bands=np.arange(a.COLS)
+    def spectrum():
+        t=clock[0]; kick=math.exp(-(t%0.5)*9)
+        mel=4+3.5*math.sin(t*0.9)+2*math.sin(t*2.3)
+        s=0.9*kick*np.exp(-bands/2.5)+0.6*np.exp(-((bands-mel)/1.6)**2)*(0.7+0.3*math.sin(t*6))
+        s+=0.25*rnd.random(a.COLS)*np.linspace(0.3,1,a.COLS)*(1 if t%0.25<0.08 else 0.4)
+        return np.clip(s,0,1)
+    return spectrum
+a._spectrum=fake_spectrum                               # shortcut: synthetic beat, not real music
 K,G,FPS=40,6,20                                         # key size, gap, frame rate
 W,H=a.COLS*(K+G)+G, a.ROWS*(K+G)+G
 px=a.ANIMS[name](); frames=[]
 for n in range(int(secs*FPS)):
-    t=n/FPS
+    t=clock[0]=n/FPS
     if hasattr(px,'step'): px.step(t)
     glow=Image.new('RGB',(W,H)); caps=Image.new('RGB',(W,H),(14,14,16))
     dg,dc=ImageDraw.Draw(glow),ImageDraw.Draw(caps)
