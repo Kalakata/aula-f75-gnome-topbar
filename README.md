@@ -46,6 +46,7 @@ cd aula-f75-gnome-topbar
 ```
 
 Then log out and back in once (GNOME on Wayland only loads new extensions at login).
+It also adds a Super+Shift+S shortcut that starts `aulactl play` in a terminal (change it in Settings → Keyboard → Custom Shortcuts).
 The udev rule (`70-aula-f75.rules`) lets the user logged in at the machine control the lighting without sudo.
 It only opens the keyboard's lighting interface, never the one that carries keystrokes, and uses the
 seat-bound `uaccess` ACL instead of a group.
