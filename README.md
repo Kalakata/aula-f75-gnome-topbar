@@ -55,6 +55,7 @@ seat-bound `uaccess` ACL instead of a group.
 ```
 aulactl list | info | effect N|NAME | brightness N | speed N | color N | save FILE | restore FILE
 aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECONDS]
+aulactl play    # snake you steer with the arrow keys (in that terminal); q quits
 ```
 
 The top-bar menu does the same: animations, live brightness and speed sliders, and the built-in effects.

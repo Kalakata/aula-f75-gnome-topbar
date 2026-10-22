@@ -341,6 +341,64 @@ def animate(fd, name, secs):
                 i=(c*ROWS+r)*3; f[i:i+3]=bytes(int(max(0,min(1,v*bri))*255) for v in px(c,r,t))
         _set(fd,_cmd(0x08,1<<16,378)+bytes(f)); time.sleep(1/30)
 
+def play(fd):
+    """Snake you steer: arrows or WASD in this terminal, the board is the keyboard. q quits."""
+    import curses
+    CELLS={(c,r) for c in range(COLS) for r in range(ROWS-1) if c*ROWS+r not in NO_KEY}   # holes are walls
+    DIRS={curses.KEY_UP:(0,-1),curses.KEY_DOWN:(0,1),curses.KEY_LEFT:(-1,0),curses.KEY_RIGHT:(1,0),
+          ord('w'):(0,-1),ord('s'):(0,1),ord('a'):(-1,0),ord('d'):(1,0)}
+    def send(px):
+        bri=live()[0]; f=bytearray(378)
+        for c in range(COLS):
+            for r in range(ROWS):
+                i=(c*ROWS+r)*3; f[i:i+3]=bytes(int(max(0,min(1,v*bri))*255) for v in px((c,r)))
+        _set(fd,_cmd(0x08,1<<16,378)+bytes(f))
+    def game(scr):
+        curses.curs_set(0); scr.nodelay(True); best=0; pal=-1
+        def say(*lines):
+            scr.erase()
+            for i,l in enumerate(lines): scr.addstr(i,0,l)
+            scr.refresh()
+        while True:
+            pal=(pal+1)%len(SNAKE_PALETTES); colour,BG=SNAKE_PALETTES[pal]
+            body=[(4,2),(3,2),(2,2)]; d=(1,0); turns=[]; nxt=time.time()+0.6
+            food=random.choice([x for x in CELLS if x not in body])
+            while True:
+                say(f'SNAKE  score {len(body)-3}  best {best}','arrows / WASD steer, q quits',
+                    '(keep this window focused)')
+                k=scr.getch()
+                while k!=-1:
+                    if k==ord('q'): return
+                    if k in DIRS and len(turns)<3: turns.append(DIRS[k])   # buffered: quick double turns work
+                    k=scr.getch()
+                if time.time()>=nxt:
+                    while turns:
+                        t=turns.pop(0)
+                        if t!=d and t!=(-d[0],-d[1]): d=t; break   # no reversing into yourself
+                    head=(body[0][0]+d[0],body[0][1]+d[1])
+                    if head not in CELLS or head in body[:-1]: break
+                    body.insert(0,head)
+                    if head==food:
+                        free=[x for x in CELLS if x not in body]
+                        if not free: break                       # filled the board
+                        food=random.choice(free)
+                    else: body.pop()
+                    nxt=time.time()+max(0.11,0.32-0.012*(len(body)-3))   # speeds up as you grow
+                p=0.7+0.3*math.sin(time.time()*8)
+                send(lambda x: (p,0.04*p,0) if x==food else colour if x==body[0] else
+                     tuple(v*(0.25+0.6*(1-body.index(x)/len(body))) for v in colour) if x in body else BG)
+                time.sleep(1/30)
+            best=max(best,len(body)-3); t0=time.time()
+            while time.time()-t0<1.2:                            # game over: body blinks red
+                v=0.5+0.5*math.cos((time.time()-t0)*12); send(lambda x: (v,0,0) if x in body else BG)
+                time.sleep(1/30)
+            say(f'GAME OVER  score {len(body)-3}  best {best}','space / enter: play again, q quits')
+            scr.nodelay(False)
+            while (k:=scr.getch()) not in (ord(' '),10,curses.KEY_ENTER,ord('q')): pass
+            if k==ord('q'): return
+            scr.nodelay(True)
+    curses.wrapper(game)
+
 LIVE=os.path.expanduser('~/.config/aula/live.json')   # written by the top-bar extension
 def live():
     """Animation brightness (0-1) and speed (multiplier); defaults if the file is missing or bad."""
@@ -365,7 +423,8 @@ def main():
     if not a or a[0] in ('-h','--help'):
         print('usage: aulactl info | list | effect N|NAME | brightness N | speed N | color N'
               '\n       aulactl save FILE | restore FILE'
-              '\n       aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECONDS]'); return
+              '\n       aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECONDS]'
+              '\n       aulactl play    (snake you steer with the arrow keys)'); return
     cmd=a[0]
     if cmd=='animations': print('\n'.join(ANIMS)); return   # for the top-bar menu; no device access
     if cmd not in ('info','list','save'): stop_animation()   # reads must not kill it (menu opens call list)
@@ -389,6 +448,10 @@ def main():
         except FileNotFoundError as e:
             if e.filename!='pw-record': raise
             sys.exit(f'{name} needs pw-record from PipeWire (Debian/Ubuntu: sudo apt install pipewire-bin)')
+        return
+    if cmd=='play':
+        try: play(fd)
+        except KeyboardInterrupt: pass
         return
     if cmd=='save':
         open(a[1],'wb').write(bytes(buf)); print(f'saved -> {a[1]}'); return
