@@ -58,6 +58,10 @@ aulactl animate [aurora|music|pulse|fire|twinkle|snake|scanner|heartbeat] [SECON
 The top-bar menu does the same: animations, live brightness and speed sliders, and the built-in effects.
 Effect descriptions are built in; to rename any, put `{"7": "my name"}` in `~/.config/aula/effect-names.json`.
 
+## Making your own animation
+
+See [AGENTS.md](AGENTS.md): a function per animation in `aulactl`, previewable without the keyboard. Written for AI coding agents, readable by humans.
+
 ## Protocol
 
 Recovered from the vendor driver (`AULA F75 Setup v2.0 20240509.exe` → `OemDrv.exe`, class `CDevG5KB`)
