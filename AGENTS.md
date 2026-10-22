@@ -42,7 +42,7 @@ Everything lives in `aulactl`; there is nothing else to register.
 
 - Without hardware: `./preview.py NAME 6 /tmp/NAME.gif` renders exactly the frames the keyboard would get.
   Look at a few frames before claiming it works. It cannot run `music` or `pulse` (live audio).
-- On hardware: `aulactl animate NAME 10`. Ctrl+C or any other `aulactl` command stops it.
+- On hardware: `aulactl animate NAME 10`. Ctrl+C, the menu's Stop, or any `aulactl` command that changes the lighting stops it (`info`, `list` and `save` don't).
 - If you are adding a GIF to the README, keep it under ~3 MB.
 
 ## Hard rules
